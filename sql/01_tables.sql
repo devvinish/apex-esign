@@ -1,4 +1,4 @@
--- ESign Lab: tables of the ESIGN schema (run as ESIGN, or with current_schema = ESIGN)
+-- ESign Lab: tables (run as the schema that owns the application objects)
 
 -- Settings (name/value). DEV_MODE = Y shows signing links and one-time codes on screen,
 -- for instances without a mail server.

@@ -27,28 +27,26 @@ Step-by-step guide with screenshots: on [vinish.dev](https://vinish.dev).
 - Oracle APEX 26.1 or later, and an APEX workspace.
 - openssl, to create the seal certificate.
 
-## Install
+## Install into your schema
 
-1. As a DBA, create the ESIGN schema and add it to your workspace. Edit the workspace name at the top first:
+1. Ask a DBA to run `sql/00_grants.sql` with your schema name: MLE (JavaScript) and DBMS_CRYPTO privileges.
 
-   ```sql
-   @sql/00_create_schema.sql
-   ```
-
-2. As a DBA, from the folder of this README, install the database objects. This loads pdf-lib too:
+2. Connect as your schema (the parsing schema of your APEX workspace) and, from the folder of this README, run:
 
    ```sql
    @install.sql
    ```
 
+   It creates the tables, loads pdf-lib as a JavaScript module, and creates the PDF module and the package.
+
 3. Create the seal certificate with openssl, paste it into `sql/05_seal_key.sql` (the commands are in the file),
-   and run that script. Then delete the key file.
+   and run that script in your schema. Then delete the key file.
 
 4. In App Builder, import `apex/f301.sql` (ESign Signing, alias `ESIGN-SIGN`) and `apex/f300.sql`
-   (ESign Lab, alias `ESIGN`). Choose ESIGN as the parsing schema and keep the aliases: the sender app and
-   the signing links refer to `ESIGN-SIGN`.
+   (ESign Lab, alias `ESIGN`) with your schema as the parsing schema. Keep the aliases: the sender app and the
+   signing links refer to `ESIGN-SIGN` (or change the setting SIGN_APP).
 
-5. Sign in to ESign Lab with a user of your workspace.
+5. Run ESign Lab and sign in with a user of your workspace.
 
 ## Applications
 
@@ -77,13 +75,13 @@ the sender's session.
 
 | File | Contents |
 |---|---|
-| `sql/00_create_schema.sql` | The ESIGN schema-only account, its grants, and the workspace assignment |
+| `sql/00_grants.sql` | The privileges your schema needs (run by a DBA) |
 | `sql/01_tables.sql` | Settings, documents, signers, immutable audit table, seal keys, demo mailbox |
 | `sql/02_pdf_lib.sql` | pdf-lib 1.17.1 (MIT licence, text in the file) loaded as the MLE module PDF_LIB |
 | `sql/03_pdf_mle.sql` | JavaScript module that stamps the signatures, builds the certificate, and adds the signature placeholder |
 | `sql/04_esign_pkg.sql` | Business logic: envelopes, links, one-time codes, audit chain, PKCS#7 seal, verification |
 | `sql/05_seal_key.sql` | Stores the seal certificate and private key |
-| `install.sql` | Runs 01 to 04 in the ESIGN schema |
+| `install.sql` | Runs 01 to 04 in your schema |
 | `apex/f300.sql`, `apex/f301.sql` | The two APEX applications |
 | `samples/website-development-agreement.pdf` | A sample document to practice with |
 

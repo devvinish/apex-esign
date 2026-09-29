@@ -769,10 +769,6 @@ p_id=>wwv_flow_imp.id(1148)
 '                      when :G_OTP_OK = to_char(:G_SIGNER_ID)                         then ''SIGN''',
 '                      else ''VERIFY''',
 '                  end;',
-'    -- after signing, the signer may still open the (completed) PDF in this session only',
-'    if :P100_STEP = ''DONE'' and nvl(:G_OTP_OK, ''-'') <> to_char(:G_SIGNER_ID) then',
-'        :P100_STEP := ''DONE'';',
-'    end if;',
 'end;'))
 ,p_process_clob_language=>'PLSQL'
 ,p_error_display_location=>'INLINE_IN_NOTIFICATION'

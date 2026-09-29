@@ -1,11 +1,9 @@
--- ESign Lab: installs the database objects into the ESIGN schema.
--- Run as a DBA in SQL*Plus or SQLcl, from the folder of this file, after sql/00_create_schema.sql:
+-- ESign Lab: installs the database objects into your schema.
+-- Connect as the parsing schema of your APEX workspace (after sql/00_grants.sql) and run,
+-- in SQL*Plus or SQLcl, from the folder of this file:
 --     @install.sql
--- Then run seal-key.sql (created by seal-key.sh) and import apex/f300.sql and apex/f301.sql.
+-- Then store the seal certificate with sql/05_seal_key.sql and create or import the applications.
 whenever sqlerror exit failure
-set verify off
-define schema = ESIGN
-alter session set current_schema = &schema;
 set define off sqlblanklines on serveroutput on verify off
 
 prompt == Tables
@@ -19,7 +17,7 @@ prompt == Package ESIGN_PKG
 
 prompt == Invalid objects (none expected)
 set heading off feedback off
-select object_type || ' ' || object_name from all_objects where owner = sys_context('userenv', 'current_schema') and status <> 'VALID';
-select 'ERROR ' || name || ' line ' || line || ': ' || text from all_errors where owner = sys_context('userenv', 'current_schema') order by name, sequence;
+select object_type || ' ' || object_name from user_objects where status <> 'VALID';
+select 'ERROR ' || name || ' line ' || line || ': ' || text from user_errors order by name, sequence;
 set heading on feedback on
 prompt Done.

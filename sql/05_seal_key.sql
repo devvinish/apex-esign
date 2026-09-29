@@ -8,14 +8,14 @@
 --      -addext "keyUsage=critical,digitalSignature,nonRepudiation"
 --
 -- 2. Paste the contents of seal-cert.pem and seal-key.pem below, including the BEGIN and END lines.
--- 3. Run this script as a DBA (or in SQL Workshop, parsing as ESIGN), then delete seal-key.pem
+-- 3. Run this script in your schema (SQL*Plus, SQLcl, or SQL Workshop), then delete seal-key.pem
 --    and do not save this file with the key in it.
 --
 -- Production: use a document-signing certificate from a CA (ideally on the Adobe Approved Trust List)
 -- and keep the private key in a wallet or HSM rather than in a table.
 set define off
 begin
-    esign.esign_pkg.set_seal_key(
+    esign_pkg.set_seal_key(
         p_label    => 'ESign Lab Document Seal',
         p_cert_pem => q'[
 -----BEGIN CERTIFICATE-----
