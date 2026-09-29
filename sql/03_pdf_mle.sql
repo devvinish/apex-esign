@@ -3,7 +3,7 @@
 set define off sqlblanklines on
 
 create or replace mle module esign_pdf_js language javascript as
-import { PDFDocument, StandardFonts, rgb, PDFName, PDFNumber, PDFHexString, PDFString } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFName, PDFNumber, PDFHexString, PDFString, PDFArray, PDFDict } from 'pdf-lib';
 
 const INK = rgb(0.13, 0.16, 0.22);
 const MUTED = rgb(0.42, 0.45, 0.5);
@@ -58,6 +58,51 @@ function wrap(font, size, s, width) {
     }
     if (line) lines.push(line);
     return lines;
+}
+
+// Invisible signature field on a page, with placeholders for /ByteRange and /Contents that
+// ESIGN_PKG.SEAL_PDF fills with the PKCS#7 seal
+function addSealField(doc, page, meta, font) {
+    const sigDict = doc.context.obj({
+        Type: 'Sig',
+        Filter: 'Adobe.PPKLite',
+        SubFilter: 'adbe.pkcs7.detached',
+        ByteRange: [PDFNumber.of(0), PDFName.of('**********'), PDFName.of('**********'), PDFName.of('**********')],
+        Contents: PDFHexString.of('0'.repeat(SIG_BYTES * 2)),
+        Reason: PDFString.of(safeText(font, 'Completed envelope ' + meta.envelopeId)),
+        Name: PDFString.of(safeText(font, meta.sealName)),
+        Location: PDFString.of(safeText(font, meta.org)),
+        M: PDFString.fromDate(new Date())
+    });
+    const sigRef = doc.context.register(sigDict);
+    const widget = doc.context.obj({
+        Type: 'Annot', Subtype: 'Widget', FT: 'Sig', Rect: [0, 0, 0, 0], F: 132,
+        T: PDFString.of('ESignSeal'), V: sigRef, P: page.ref
+    });
+    const widgetRef = doc.context.register(widget);
+    const annots = page.node.lookup(PDFName.of('Annots'));
+    if (annots instanceof PDFArray) annots.push(widgetRef);
+    else page.node.set(PDFName.of('Annots'), doc.context.obj([widgetRef]));
+    const form = doc.catalog.lookup(PDFName.of('AcroForm'));
+    if (form instanceof PDFDict) {
+        const fields = form.lookup(PDFName.of('Fields'));
+        if (fields instanceof PDFArray) fields.push(widgetRef);
+        else form.set(PDFName.of('Fields'), doc.context.obj([widgetRef]));
+        form.set(PDFName.of('SigFields'), PDFNumber.of(3));
+    } else {
+        doc.catalog.set(PDFName.of('AcroForm'), doc.context.obj({ SigFields: 3, Fields: [widgetRef] }));
+    }
+}
+
+// Adds only the signature field, to a PDF made by another tool (ESIGN_RENDER_PDF)
+export async function prepareSeal(pdfBlob, metaJson) {
+    const meta = JSON.parse(metaJson);
+    const doc = await PDFDocument.load(readBlob(pdfBlob), { ...NO_TICKS, updateMetadata: false });
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const pages = doc.getPages();
+    addSealField(doc, pages[pages.length - 1], meta, font);
+    const bytes = await doc.save({ ...NO_TICKS, useObjectStreams: false });
+    return toBlob(bytes);
 }
 
 // Page count and encryption of an uploaded PDF: {"ok":true,"pages":3} or {"ok":false,"error":"..."}
@@ -210,25 +255,7 @@ export async function stamp(pdfBlob, metaJson) {
     }
 
     // 4. Invisible signature field whose value is the seal
-    const sigDict = doc.context.obj({
-        Type: 'Sig',
-        Filter: 'Adobe.PPKLite',
-        SubFilter: 'adbe.pkcs7.detached',
-        ByteRange: [PDFNumber.of(0), PDFName.of('**********'), PDFName.of('**********'), PDFName.of('**********')],
-        Contents: PDFHexString.of('0'.repeat(SIG_BYTES * 2)),
-        Reason: PDFString.of(safeText(font, 'Completed envelope ' + meta.envelopeId)),
-        Name: PDFString.of(safeText(font, meta.sealName)),
-        Location: PDFString.of(safeText(font, meta.org)),
-        M: PDFString.fromDate(new Date())
-    });
-    const sigRef = doc.context.register(sigDict);
-    const widget = doc.context.obj({
-        Type: 'Annot', Subtype: 'Widget', FT: 'Sig', Rect: [0, 0, 0, 0], F: 132,
-        T: PDFString.of('ESignSeal'), V: sigRef, P: page.ref
-    });
-    const widgetRef = doc.context.register(widget);
-    page.node.set(PDFName.of('Annots'), doc.context.obj([widgetRef]));
-    doc.catalog.set(PDFName.of('AcroForm'), doc.context.obj({ SigFields: 3, Fields: [widgetRef] }));
+    addSealField(doc, page, meta, font);
 
     doc.setTitle(safeText(font, meta.title));
     doc.setProducer(safeText(font, meta.org + ' (Oracle APEX + pdf-lib)'));
@@ -245,6 +272,9 @@ create or replace package esign_pdf authid definer as
     -- stamped PDF with certificate pages and an empty signature field
     function stamp(p_pdf in blob, p_meta in clob) return blob
         as mle module esign_pdf_js env esign_pdf_env signature 'stamp(OracleBlob, string)';
+    -- a PDF made by another tool, with an empty signature field added to its last page
+    function prepare_seal(p_pdf in blob, p_meta in clob) return blob
+        as mle module esign_pdf_js env esign_pdf_env signature 'prepareSeal(OracleBlob, string)';
     -- RSA signature with SHA-256 of p_data; p_key_b64 = base64 of an unencrypted PKCS#8 private key
     function sign_rsa(p_data in raw, p_key_b64 in varchar2) return raw;
 end esign_pdf;

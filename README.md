@@ -61,6 +61,16 @@ Step-by-step guide with screenshots: on [vinish.dev](https://vinish.dev).
 ESign Signing has a session cookie of its own, so a signing link opened in the sender's browser does not end
 the sender's session.
 
+## Use your own PDF tool
+
+The e-signature part only produces data: the original PDF and the signature images (BLOBs), and all the
+evidence as JSON (`esign_pkg.evidence_json(p_doc_id)`, a CLOB). The final PDF of a completed envelope comes
+from one function in your schema, `ESIGN_RENDER_PDF(p_doc_id) return blob` (`sql/06_render_pdf.sql`). It uses
+the built-in engine by default; replace its return statement with a call to PL/PDF, AOP, Jasper Reports,
+BI Publisher, VinAura, or any other tool. FINALIZE seals whatever PDF it returns when a PDF engine (MLE or Java)
+is installed. With `sql/03_pdf_none.sql` (no engine), the PDF is stored as returned, without a seal, and verified
+by its SHA-256 fingerprint.
+
 ## Settings (table ESIGN_SETTINGS)
 
 | Name | Default | Meaning |
@@ -84,7 +94,9 @@ the sender's session.
 | `sql/03_pdf_mle.sql` | 23ai/26ai: the JavaScript module that stamps the PDF, and the package ESIGN_PDF |
 | `sql/03_pdf_java.sql` | 19c: the same package ESIGN_PDF in Java (core Java 8 only, no libraries to load) |
 | `sql/04_esign_pkg.sql` | Business logic: envelopes, links, one-time codes, audit chain, PKCS#7 seal, verification |
+| `sql/03_pdf_none.sql` | ESIGN_PDF without a PDF engine, for databases with neither MLE nor Java |
 | `sql/05_seal_key.sql` | Stores the seal certificate and private key |
+| `sql/06_render_pdf.sql` | ESIGN_RENDER_PDF: makes the final PDF; change it to use your own PDF tool |
 | `install.sql`, `install_19c.sql` | Run the scripts of your database version in your schema |
 | `apex/f300.sql`, `apex/f301.sql` | The two APEX applications |
 | `samples/website-development-agreement.pdf` | A sample document to practice with |

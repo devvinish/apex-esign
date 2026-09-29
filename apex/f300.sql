@@ -1426,7 +1426,7 @@ p_id=>wwv_flow_imp.id(1082)
 '    :P2_HEADING    := l_doc.title;',
 '    :P2_SUBHEADING := initcap(l_doc.status) || '' &middot; Envelope '' || l_doc.envelope_id || '' &middot; sent by ''',
 '                   || apex_escape.html(esign_pkg.sender_name(l_doc.created_by));',
-'    :P2_FILE_INFO  := apex_escape.html(l_doc.file_name) || '', '' || l_doc.page_count || '' pages''',
+'    :P2_FILE_INFO  := apex_escape.html(l_doc.file_name) || case when l_doc.page_count is not null then '', '' || l_doc.page_count || '' pages'' end',
 '                   || ''<div class="esign-hash">Original SHA-256 '' || l_doc.original_sha256 || ''</div>''',
 '                   || case when l_doc.signed_sha256 is not null',
 '                           then ''<div class="esign-hash">Signed PDF SHA-256 '' || l_doc.signed_sha256 || ''</div>'' end',

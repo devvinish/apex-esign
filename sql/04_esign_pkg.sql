@@ -52,7 +52,12 @@ create or replace package esign_pkg authid definer as
     procedure void_document(p_doc_id in number, p_reason in varchar2);
     -- raises an error unless the current APEX user sent the envelope
     procedure check_owner(p_doc_id in number);
+    -- Completes an envelope: gets the final PDF from the function ESIGN_RENDER_PDF (sql/06_render_pdf.sql),
+    -- adds a signature field if the PDF has none, seals it, stores it, and e-mails it to everyone
     procedure finalize(p_doc_id in number);
+    -- All the evidence of an envelope as JSON: envelope, signers (with their signature images as base64 PNG),
+    -- and the audit trail. Any PDF tool can build the signed PDF or a certificate from it.
+    function evidence_json(p_doc_id in number) return clob;
     procedure download(p_doc_id in number, p_which in varchar2, p_inline in boolean default false);
 
     ----------------------------------------------------------------- signer side
@@ -86,6 +91,9 @@ end esign_pkg;
 /
 
 create or replace package body esign_pkg as
+
+    -- the start of the empty /Contents of a signature field
+    c_placeholder constant varchar2(41) := '<0000000000000000000000000000000000000000';
 
     ------------------------------------------------------------------ helpers
     function setting(p_name in varchar2) return varchar2 is
@@ -627,7 +635,7 @@ create or replace package body esign_pkg as
         dbms_lob.createtemporary(l_pdf, true);
         dbms_lob.copy(l_pdf, p_pdf, dbms_lob.getlength(p_pdf));
         l_total    := dbms_lob.getlength(l_pdf);
-        l_lt       := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('<0000000000000000000000000000000000000000'));
+        l_lt       := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw(c_placeholder));
         if l_lt = 0 then
             fail('The PDF has no signature placeholder.');
         end if;
@@ -718,23 +726,11 @@ create or replace package body esign_pkg as
     end set_seal_key;
 
     ------------------------------------------------------------------ completion
-    procedure finalize(p_doc_id in number) is
-        l_doc    esign_documents%rowtype := doc_row(p_doc_id, p_lock => true);
-        l_meta   clob;
-        l_pdf    blob;
-        l_seal   varchar2(400);
-        l_open   pls_integer;
+    function evidence_json(p_doc_id in number) return clob is
+        l_doc  esign_documents%rowtype := doc_row(p_doc_id);
+        l_meta clob;
+        l_seal varchar2(400);
     begin
-        if l_doc.status <> 'SENT' then
-            fail('Only a sent document can be completed.');
-        end if;
-        select count(*) into l_open from esign_signers where doc_id = p_doc_id and status <> 'SIGNED';
-        if l_open > 0 then
-            fail(l_open || ' signer(s) have not signed yet.');
-        end if;
-        if sha256_hex(l_doc.original_pdf) <> l_doc.original_sha256 then
-            fail('The stored PDF does not match its fingerprint; it was changed after it was sent.');
-        end if;
         select nvl(max(label), 'Document seal')
           into l_seal
           from esign_seal_keys where is_active = 'Y';
@@ -747,7 +743,7 @@ create or replace package body esign_pkg as
                    'pages'          value l_doc.page_count,
                    'sender'         value sender_name(l_doc.created_by) || ' (' || l_doc.created_by || ')',
                    'sentOn'         value utc(l_doc.sent_on),
-                   'completedOn'    value utc(systimestamp),
+                   'completedOn'    value utc(nvl(l_doc.completed_on, systimestamp)),
                    'routing'        value l_doc.routing,
                    'originalSha256' value l_doc.original_sha256,
                    'sealName'       value l_seal,
@@ -786,7 +782,49 @@ create or replace package body esign_pkg as
           into l_meta
           from dual;
 
-        l_pdf := seal_pdf(esign_pdf.stamp(l_doc.original_pdf, l_meta));
+        return l_meta;
+    end evidence_json;
+
+    -- the final PDF from the application's function ESIGN_RENDER_PDF (called dynamically, so that the
+    -- package compiles before the function exists)
+    function render_pdf(p_doc_id in number) return blob is
+        l_pdf blob;
+    begin
+        execute immediate 'begin :pdf := esign_render_pdf(:doc_id); end;' using out l_pdf, in p_doc_id;
+        if l_pdf is null or dbms_lob.getlength(l_pdf) < 8 or dbms_lob.substr(l_pdf, 5, 1) <> utl_raw.cast_to_raw('%PDF-') then
+            fail('ESIGN_RENDER_PDF did not return a PDF.');
+        end if;
+        return l_pdf;
+    end render_pdf;
+
+    procedure finalize(p_doc_id in number) is
+        l_doc    esign_documents%rowtype := doc_row(p_doc_id, p_lock => true);
+        l_pdf    blob;
+        l_open   pls_integer;
+    begin
+        if l_doc.status <> 'SENT' then
+            fail('Only a sent document can be completed.');
+        end if;
+        select count(*) into l_open from esign_signers where doc_id = p_doc_id and status <> 'SIGNED';
+        if l_open > 0 then
+            fail(l_open || ' signer(s) have not signed yet.');
+        end if;
+        if sha256_hex(l_doc.original_pdf) <> l_doc.original_sha256 then
+            fail('The stored PDF does not match its fingerprint; it was changed after it was sent.');
+        end if;
+
+        l_pdf := render_pdf(p_doc_id);
+        -- a PDF from another tool has no signature field yet: the PDF engine adds one
+        if dbms_lob.instr(l_pdf, utl_raw.cast_to_raw(c_placeholder)) = 0 then
+            l_pdf := esign_pdf.prepare_seal(l_pdf, evidence_json(p_doc_id));
+        end if;
+        -- sealed when there is a signature field (without a PDF engine, the PDF is stored as it is)
+        if dbms_lob.instr(l_pdf, utl_raw.cast_to_raw(c_placeholder)) > 0 then
+            l_pdf := seal_pdf(l_pdf);
+        else
+            log_event(p_doc_id, 'NOT_SEALED', 'No PDF engine to add a digital seal; the PDF is verified by its SHA-256 only',
+                      p_actor => 'system');
+        end if;
 
         update esign_documents
            set signed_pdf    = l_pdf,
@@ -794,7 +832,9 @@ create or replace package body esign_pkg as
                status        = 'COMPLETED',
                completed_on  = systimestamp
          where doc_id = p_doc_id;
-        log_event(p_doc_id, 'COMPLETED', 'All signers signed. Sealed PDF SHA-256 ' || sha256_hex(l_pdf), p_actor => 'system');
+        log_event(p_doc_id, 'COMPLETED', 'All signers signed. '
+                  || case when dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('/adbe.pkcs7.detached')) > 0 then 'Sealed' else 'Final' end
+                  || ' PDF SHA-256 ' || sha256_hex(l_pdf), p_actor => 'system');
 
         for r in (select signer_name as name, signer_email as email from esign_signers where doc_id = p_doc_id
                   union

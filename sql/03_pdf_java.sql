@@ -80,10 +80,71 @@ public class ESignPdf {
     }
 
     static byte[] stamp(byte[] pdf, String metaJson) throws Exception {
-        Map<String, Object> meta = (Map<String, Object>) new Json(metaJson).value();
+        Map<String, Object> meta = map(new Json(metaJson).value());
         Pdf p = new Pdf(pdf);
         if (p.trailer.containsKey("Encrypt")) throw new Exception("The PDF is encrypted.");
         new Stamper(p, meta).run();
+        return p.save();
+    }
+
+    /** Empty signature field on a page (whose dictionary the caller updates), and the form in the catalog. */
+    static void addSealField(Pdf pdf, Ref pageRef, Map<String, Object> page, Map<String, Object> meta) throws Exception {
+        // placeholders for /ByteRange and /Contents, filled by ESIGN_PKG.SEAL_PDF
+        Map<String, Object> sig = dict();
+        sig.put("Type", new Name("Sig"));
+        sig.put("Filter", new Name("Adobe.PPKLite"));
+        sig.put("SubFilter", new Name("adbe.pkcs7.detached"));
+        sig.put("ByteRange", new Raw("[ 0 /********** /********** /********** ]"));
+        sig.put("Contents", new Raw("<" + repeat('0', SIG_BYTES * 2) + ">"));
+        sig.put("Reason", new Str(winAnsi("Completed envelope " + str(meta.get("envelopeId")))));
+        sig.put("Name", new Str(winAnsi(str(meta.get("sealName")))));
+        sig.put("Location", new Str(winAnsi(str(meta.get("org")))));
+        SimpleDateFormat f = new SimpleDateFormat("yyyyMMddHHmmss");
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        sig.put("M", new Str(("D:" + f.format(new Date()) + "Z").getBytes("ISO-8859-1")));
+        Ref sigRef = pdf.add(sig);
+        Map<String, Object> widget = dict();
+        widget.put("Type", new Name("Annot"));
+        widget.put("Subtype", new Name("Widget"));
+        widget.put("FT", new Name("Sig"));
+        widget.put("Rect", arr(0, 0, 0, 0));
+        widget.put("F", 132);
+        widget.put("T", new Str("ESignSeal".getBytes("ISO-8859-1")));
+        widget.put("V", sigRef);
+        widget.put("P", pageRef);
+        Ref widgetRef = pdf.add(widget);
+        List<Object> annots = new ArrayList<>();
+        Object old = pdf.resolve(page.get("Annots"));
+        if (old instanceof List) annots.addAll((List<?>) old);
+        annots.add(widgetRef);
+        page.put("Annots", annots);
+        Map<String, Object> root = new LinkedHashMap<>(pdf.dictOf(pdf.trailer.get("Root")));
+        Map<String, Object> form = dict();
+        Map<String, Object> oldForm = pdf.dictOf(root.get("AcroForm"));
+        if (oldForm != null) form.putAll(oldForm);
+        List<Object> fields = new ArrayList<>();
+        if (form.get("Fields") != null) fields.addAll((List<?>) pdf.resolve(form.get("Fields")));
+        fields.add(widgetRef);
+        form.put("Fields", fields);
+        form.put("SigFields", 3);
+        root.put("AcroForm", form);
+        pdf.update((Ref) pdf.trailer.get("Root"), root);
+    }
+
+    /** A PDF made by another tool, with an empty signature field added to its last page. */
+    public static Blob prepareSeal(Blob pdf, Clob metaJson) throws Exception {
+        return toBlob(prepareSeal(read(pdf), readClob(metaJson)));
+    }
+
+    static byte[] prepareSeal(byte[] pdf, String metaJson) throws Exception {
+        Map<String, Object> meta = map(new Json(metaJson).value());
+        Pdf p = new Pdf(pdf);
+        if (p.trailer.containsKey("Encrypt")) throw new Exception("The PDF is encrypted.");
+        List<Page> pages = p.pages();
+        Page last = pages.get(pages.size() - 1);
+        Map<String, Object> pd = new LinkedHashMap<>(last.dict);
+        addSealField(p, last.ref, pd, meta);
+        p.update(last.ref, pd);
         return p.save();
     }
 
@@ -181,7 +242,7 @@ public class ESignPdf {
                         }
                     }
                 }
-                Map<String, Object> t = (Map<String, Object>) lx.object();
+                Map<String, Object> t = map(lx.object());
                 if (newest) xrefStream = false;
                 mergeTrailer(t);
                 if (t.get("XRefStm") instanceof Number) readXref(((Number) t.get("XRefStm")).longValue(), false);
@@ -276,7 +337,7 @@ public class ESignPdf {
 
         Map<String, Object> dictOf(Object o) throws Exception {
             Object v = resolve(o);
-            return v instanceof Map ? (Map<String, Object>) v : v instanceof Stream ? ((Stream) v).dict : null;
+            return v instanceof Map ? map(v) : v instanceof Stream ? ((Stream) v).dict : null;
         }
 
         Ref add(Object o) { Ref r = new Ref(nextNum++, 0); changed.put(r.num, o); return r; }
@@ -418,7 +479,7 @@ public class ESignPdf {
                 pos += 6;
                 if (d[pos] == '\r') pos++;
                 if (d[pos] == '\n') pos++;
-                Map<String, Object> sd = (Map<String, Object>) o;
+                Map<String, Object> sd = map(o);
                 int len = -1;
                 try { len = num(pdf == null ? sd.get("Length") : pdf.resolve(sd.get("Length"))); } catch (Exception e) { len = -1; }
                 if (len < 0 || pos + len > d.length || !endstreamAt(pos + len)) {
@@ -830,7 +891,7 @@ public class ESignPdf {
                 Map<String, Object> merged = new LinkedHashMap<>();
                 Map<String, Object> o = pdf.dictOf(res.get(e.getKey()));
                 if (o != null) merged.putAll(o);
-                Map<String, Object> add = (Map<String, Object>) e.getValue();
+                Map<String, Object> add = map(e.getValue());
                 merged.putAll(add);
                 res.put(e.getKey(), merged);
             }
@@ -843,14 +904,14 @@ public class ESignPdf {
 
         /** Adds the certificate pages to the page tree, and the signature field to the last one. */
         private void addPagesAndSignature(List<Page> pages) throws Exception {
-            Map<String, Object> root = new LinkedHashMap<>(pdf.dictOf(pdf.trailer.get("Root")));
+            Map<String, Object> root = pdf.dictOf(pdf.trailer.get("Root"));
             Ref pagesRef = (Ref) root.get("Pages");
             Map<String, Object> tree = new LinkedHashMap<>(pdf.dictOf(pagesRef));
             List<Object> kids = new ArrayList<>((List<?>) pdf.resolve(tree.get("Kids")));
             Ref last = null;
             for (Object[] cp : certPages) {
                 Content c = (Content) cp[0];
-                Map<String, Object> xo = (Map<String, Object>) cp[1];
+                Map<String, Object> xo = map(cp[1]);
                 Map<String, Object> pg = dict();
                 pg.put("Type", new Name("Page"));
                 pg.put("Parent", pagesRef);
@@ -865,42 +926,8 @@ public class ESignPdf {
             tree.put("Count", pages.size() + certPages.size());
             pdf.update(pagesRef, tree);
 
-            // the signature: placeholders for /ByteRange and /Contents, filled by ESIGN_PKG.SEAL_PDF
-            Map<String, Object> sig = dict();
-            sig.put("Type", new Name("Sig"));
-            sig.put("Filter", new Name("Adobe.PPKLite"));
-            sig.put("SubFilter", new Name("adbe.pkcs7.detached"));
-            sig.put("ByteRange", new Raw("[ 0 /********** /********** /********** ]"));
-            sig.put("Contents", new Raw("<" + repeat('0', SIG_BYTES * 2) + ">"));
-            sig.put("Reason", new Str(winAnsi("Completed envelope " + str(meta.get("envelopeId")))));
-            sig.put("Name", new Str(winAnsi(str(meta.get("sealName")))));
-            sig.put("Location", new Str(winAnsi(str(meta.get("org")))));
-            SimpleDateFormat f = new SimpleDateFormat("yyyyMMddHHmmss");
-            f.setTimeZone(TimeZone.getTimeZone("UTC"));
-            sig.put("M", new Str(("D:" + f.format(new Date()) + "Z").getBytes("ISO-8859-1")));
-            Ref sigRef = pdf.add(sig);
-            Map<String, Object> widget = dict();
-            widget.put("Type", new Name("Annot"));
-            widget.put("Subtype", new Name("Widget"));
-            widget.put("FT", new Name("Sig"));
-            widget.put("Rect", arr(0, 0, 0, 0));
-            widget.put("F", 132);
-            widget.put("T", new Str("ESignSeal".getBytes("ISO-8859-1")));
-            widget.put("V", sigRef);
-            widget.put("P", last);
-            Ref widgetRef = pdf.add(widget);
-            Map<String, Object> lastPage = (Map<String, Object>) pdf.get(last);
-            lastPage.put("Annots", arr(widgetRef));
-            Map<String, Object> form = dict();
-            Map<String, Object> oldForm = pdf.dictOf(root.get("AcroForm"));
-            if (oldForm != null) form.putAll(oldForm);
-            List<Object> fields = new ArrayList<>();
-            if (form.get("Fields") != null) fields.addAll((List<?>) pdf.resolve(form.get("Fields")));
-            fields.add(widgetRef);
-            form.put("Fields", fields);
-            form.put("SigFields", 3);
-            root.put("AcroForm", form);
-            pdf.update((Ref) pdf.trailer.get("Root"), root);
+            Map<String, Object> lastPage = map(pdf.get(last));
+            addSealField(pdf, last, lastPage, meta);
         }
 
         private double[] box(Page page) throws Exception {
@@ -1223,8 +1250,8 @@ public class ESignPdf {
     }
 
     static String or(Object o) { return o == null || o == NULL ? "-" : str(o); }
-    static Map<String, Object> map(Object o) { return (Map<String, Object>) o; }
-    static List<Object> list(Object o) { return o instanceof List ? (List<Object>) o : new ArrayList<Object>(); }
+    static @SuppressWarnings("unchecked") Map<String, Object> map(Object o) { return (Map<String, Object>) o; }
+    static @SuppressWarnings("unchecked") List<Object> list(Object o) { return o instanceof List ? (List<Object>) o : new ArrayList<Object>(); }
 
     static String quote(String s) {
         StringBuilder b = new StringBuilder("\"");
@@ -1303,6 +1330,9 @@ create or replace package esign_pdf authid definer as
     -- stamped PDF with certificate pages and an empty signature field
     function stamp(p_pdf in blob, p_meta in clob) return blob
         as language java name 'ESignPdf.stamp(java.sql.Blob, java.sql.Clob) return java.sql.Blob';
+    -- a PDF made by another tool, with an empty signature field added to its last page
+    function prepare_seal(p_pdf in blob, p_meta in clob) return blob
+        as language java name 'ESignPdf.prepareSeal(java.sql.Blob, java.sql.Clob) return java.sql.Blob';
     -- RSA signature with SHA-256 of p_data; p_key_b64 = base64 of an unencrypted PKCS#8 private key
     function sign_rsa(p_data in raw, p_key_b64 in varchar2) return raw
         as language java name 'ESignPdf.signRsa(byte[], java.lang.String) return byte[]';
