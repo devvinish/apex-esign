@@ -95,10 +95,13 @@ create table esign_signers (
 create index esign_signers_doc_ix on esign_signers (doc_id, sign_order);
 
 -- Audit trail: an immutable table (rows can't be updated, and not deleted for 16 days), with each
--- row chained to the previous row of the same envelope by SHA-256.
+-- row chained to the previous row of the same envelope by SHA-256. Immutable tables exist from 19.11
+-- (COMPATIBLE 19.11.0 or higher); on older releases the table is a normal one whose trigger refuses
+-- updates and deletes.
 create sequence esign_audit_seq;
 
-create immutable table esign_audit (
+declare
+    l_columns constant varchar2(1000) := q'[(
     audit_id     number        not null,
     doc_id       number        not null,
     signer_id    number,
@@ -107,12 +110,24 @@ create immutable table esign_audit (
     actor        varchar2(320),
     ip_address   varchar2(64),
     user_agent   varchar2(1000),
-    event_time   timestamp     not null,          -- UTC
+    event_time   timestamp     not null,
     prev_hash    varchar2(64),
     row_hash     varchar2(64)  not null,
-    constraint esign_audit_pk primary key (audit_id)
-) no drop until 0 days idle
-  no delete until 16 days after insert;
+    constraint esign_audit_pk primary key (audit_id))]';
+begin
+    execute immediate 'create immutable table esign_audit ' || l_columns
+                   || ' no drop until 0 days idle no delete until 16 days after insert';
+exception
+    when others then
+        if sqlcode = -955 then raise; end if;          -- the table already exists
+        execute immediate 'create table esign_audit ' || l_columns;
+        execute immediate q'[create or replace trigger esign_audit_read_only
+    before update or delete on esign_audit
+begin
+    raise_application_error(-20002, 'The audit trail cannot be changed.');
+end;]';
+end;
+/
 create index esign_audit_doc_ix on esign_audit (doc_id, audit_id);
 
 -- The certificate and private key that seal completed PDFs (PKCS#7 digital signature).

@@ -245,5 +245,19 @@ create or replace package esign_pdf authid definer as
     -- stamped PDF with certificate pages and an empty signature field
     function stamp(p_pdf in blob, p_meta in clob) return blob
         as mle module esign_pdf_js env esign_pdf_env signature 'stamp(OracleBlob, string)';
+    -- RSA signature with SHA-256 of p_data; p_key_b64 = base64 of an unencrypted PKCS#8 private key
+    function sign_rsa(p_data in raw, p_key_b64 in varchar2) return raw;
+end esign_pdf;
+/
+
+create or replace package body esign_pdf as
+    function sign_rsa(p_data in raw, p_key_b64 in varchar2) return raw is
+    begin
+        return dbms_crypto.sign(
+            src        => p_data,
+            prv_key    => utl_raw.cast_to_raw(p_key_b64),
+            pubkey_alg => dbms_crypto.key_type_rsa,
+            sign_alg   => dbms_crypto.sign_sha256_rsa);
+    end sign_rsa;
 end esign_pdf;
 /

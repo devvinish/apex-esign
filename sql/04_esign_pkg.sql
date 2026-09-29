@@ -622,25 +622,40 @@ create or replace package body esign_pkg as
         der_element(l_cert, l_pos, l_hdr, l_len);             -- issuer
         l_issuer := utl_raw.substr(l_cert, l_pos, l_hdr + l_len);
 
-        -- placeholders written by esign_pdf.stamp
+        -- placeholders written by esign_pdf.stamp: /Contents of zeros, and a /ByteRange that is either
+        -- blank (pdf-lib in MLE: filled here) or already filled (PDFBox in Java: checked here)
         dbms_lob.createtemporary(l_pdf, true);
         dbms_lob.copy(l_pdf, p_pdf, dbms_lob.getlength(p_pdf));
         l_total    := dbms_lob.getlength(l_pdf);
-        l_br_start := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('[ 0 /********** /********** /********** ]'));
         l_lt       := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('<0000000000000000000000000000000000000000'));
-        if l_br_start = 0 or l_lt = 0 then
+        if l_lt = 0 then
             fail('The PDF has no signature placeholder.');
         end if;
-        l_br_end := l_br_start + length('[ 0 /********** /********** /********** ]') - 1;
         l_gt     := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('>'), l_lt);
-
-        -- /ByteRange: everything except the <...> of /Contents
-        l_range := '[0 ' || (l_lt - 1) || ' ' || l_gt || ' ' || (l_total - l_gt) || ']';
-        if length(l_range) > l_br_end - l_br_start + 1 then
-            fail('The PDF is too large for the signature placeholder.');
+        l_range  := '[0 ' || (l_lt - 1) || ' ' || l_gt || ' ' || (l_total - l_gt) || ']';
+        l_br_start := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('[ 0 /********** /********** /********** ]'));
+        if l_br_start > 0 then
+            -- /ByteRange: everything except the <...> of /Contents
+            l_br_end := l_br_start + length('[ 0 /********** /********** /********** ]') - 1;
+            if length(l_range) > l_br_end - l_br_start + 1 then
+                fail('The PDF is too large for the signature placeholder.');
+            end if;
+            dbms_lob.write(l_pdf, l_br_end - l_br_start + 1, l_br_start,
+                           utl_raw.cast_to_raw(rpad(l_range, l_br_end - l_br_start + 1)));
+        else
+            -- the /ByteRange nearest to the placeholder must cover everything except the <...>
+            l_pos := 0;
+            loop
+                l_hdr := dbms_lob.instr(l_pdf, utl_raw.cast_to_raw('/ByteRange'), l_pos + 1);
+                exit when l_hdr = 0 or l_hdr > l_gt + 200;
+                l_pos := l_hdr;
+            end loop;
+            if l_pos = 0 or regexp_replace(utl_raw.cast_to_varchar2(dbms_lob.substr(l_pdf, 80, l_pos)),
+                                           '^/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\].*$', '[\1 \2 \3 \4]', 1, 1, 'n')
+                            <> l_range then
+                fail('The signature placeholder does not cover the whole PDF.');
+            end if;
         end if;
-        dbms_lob.write(l_pdf, l_br_end - l_br_start + 1, l_br_start,
-                       utl_raw.cast_to_raw(rpad(l_range, l_br_end - l_br_start + 1)));
 
         dbms_lob.createtemporary(l_part, true);
         dbms_lob.copy(l_part, l_pdf, l_lt - 1, 1, 1);
@@ -654,11 +669,9 @@ create or replace package body esign_pkg as
             tlv('30', utl_raw.concat(tlv('06', c_st), tlv('31', tlv('17', utl_raw.cast_to_raw(
                 to_char(sys_extract_utc(systimestamp), 'YYMMDDHH24MISS') || 'Z'))))),
             tlv('30', utl_raw.concat(tlv('06', c_md), tlv('31', tlv('04', l_digest)))));
-        l_signature := dbms_crypto.sign(
-            src        => tlv('31', l_attrs),
-            prv_key    => utl_raw.cast_to_raw(replace(replace(dbms_lob.substr(l_key.private_key_b64, 32767, 1), chr(10)), chr(13))),
-            pubkey_alg => dbms_crypto.key_type_rsa,
-            sign_alg   => dbms_crypto.sign_sha256_rsa);
+        l_signature := esign_pdf.sign_rsa(
+            p_data    => tlv('31', l_attrs),
+            p_key_b64 => replace(replace(dbms_lob.substr(l_key.private_key_b64, 32767, 1), chr(10)), chr(13)));
 
         l_cms := tlv('30', utl_raw.concat(
                     tlv('06', c_signed_data),
@@ -697,9 +710,8 @@ create or replace package body esign_pkg as
         end if;
         l_cert := apex_web_service.clobbase642blob(regexp_replace(p_cert_pem, '-----[^-]+-----|\s', ''));
         l_key  := regexp_replace(dbms_lob.substr(p_key_pem, 32767, 1), '-----[^-]+-----|\s', '');
-        -- the key must be usable by DBMS_CRYPTO
-        l_test := dbms_crypto.sign(utl_raw.cast_to_raw('test'), utl_raw.cast_to_raw(l_key),
-                                   dbms_crypto.key_type_rsa, dbms_crypto.sign_sha256_rsa);
+        -- the key must be able to sign
+        l_test := esign_pdf.sign_rsa(utl_raw.cast_to_raw('test'), l_key);
         update esign_seal_keys set is_active = 'N';
         insert into esign_seal_keys (label, subject, cert_der, private_key_b64, valid_from, is_active)
         values (p_label, p_label, l_cert, l_key, trunc(sysdate), 'Y');

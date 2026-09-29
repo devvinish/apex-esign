@@ -2,8 +2,8 @@
 
 A free, self-contained DocuSign-style signing application for Oracle APEX 26.1 and Oracle AI Database 26ai.
 It needs no paid service and no extra server: the PDF work runs inside the database, with
-[pdf-lib](https://pdf-lib.js.org) in MLE (JavaScript in the database), and the PKCS#7 digital seal is built in
-PL/SQL with DBMS_CRYPTO.
+[pdf-lib](https://pdf-lib.js.org) in MLE (JavaScript in the database) on 23ai and 26ai, or with a small Java
+engine in the database's Java on 19c. The PKCS#7 digital seal is built in PL/SQL.
 
 Step-by-step guide with screenshots: on [vinish.dev](https://vinish.dev).
 
@@ -23,21 +23,24 @@ Step-by-step guide with screenshots: on [vinish.dev](https://vinish.dev).
 
 ## Requirements
 
-- Oracle AI Database 26ai (23ai also works), including the Free edition, with MLE (JavaScript) available.
+- Oracle AI Database 26ai or 23ai with MLE (JavaScript) available, including the Free edition, or Oracle
+  Database 19c with the database's Java (the component JServer JAVA Virtual Machine).
 - Oracle APEX 26.1 or later, and an APEX workspace.
 - openssl, to create the seal certificate.
 
 ## Install into your schema
 
-1. Ask a DBA to run `sql/00_grants.sql` with your schema name: MLE (JavaScript) and DBMS_CRYPTO privileges.
+1. Ask a DBA to run `sql/00_grants.sql` with your schema name. On 19c, skip its three MLE grants.
 
-2. Connect as your schema (the parsing schema of your APEX workspace) and, from the folder of this README, run:
+2. Connect as your schema (the parsing schema of your APEX workspace) and, from the folder of this README, run
+   the installer for your database:
 
    ```sql
-   @install.sql
+   @install.sql        -- 23ai and 26ai: pdf-lib in MLE
+   @install_19c.sql    -- 19c: the Java engine
    ```
 
-   It creates the tables, loads pdf-lib as a JavaScript module, and creates the PDF module and the package.
+   Both create the tables, the PDF engine (package ESIGN_PDF), and the package ESIGN_PKG.
 
 3. Create the seal certificate with openssl, paste it into `sql/05_seal_key.sql` (the commands are in the file),
    and run that script in your schema. Then delete the key file.
@@ -76,14 +79,19 @@ the sender's session.
 | File | Contents |
 |---|---|
 | `sql/00_grants.sql` | The privileges your schema needs (run by a DBA) |
-| `sql/01_tables.sql` | Settings, documents, signers, immutable audit table, seal keys, demo mailbox |
-| `sql/02_pdf_lib.sql` | pdf-lib 1.17.1 (MIT licence, text in the file) loaded as the MLE module PDF_LIB |
-| `sql/03_pdf_mle.sql` | JavaScript module that stamps the signatures, builds the certificate, and adds the signature placeholder |
+| `sql/01_tables.sql` | Settings, documents, signers, the audit table (immutable from 19.11), seal keys, demo mailbox |
+| `sql/02_pdf_lib.sql` | 23ai/26ai: pdf-lib 1.17.1 (MIT licence, text in the file) loaded as the MLE module PDF_LIB |
+| `sql/03_pdf_mle.sql` | 23ai/26ai: the JavaScript module that stamps the PDF, and the package ESIGN_PDF |
+| `sql/03_pdf_java.sql` | 19c: the same package ESIGN_PDF in Java (core Java 8 only, no libraries to load) |
 | `sql/04_esign_pkg.sql` | Business logic: envelopes, links, one-time codes, audit chain, PKCS#7 seal, verification |
 | `sql/05_seal_key.sql` | Stores the seal certificate and private key |
-| `install.sql` | Runs 01 to 04 in your schema |
+| `install.sql`, `install_19c.sql` | Run the scripts of your database version in your schema |
 | `apex/f300.sql`, `apex/f301.sql` | The two APEX applications |
 | `samples/website-development-agreement.pdf` | A sample document to practice with |
+
+The Java engine changes the PDF with an incremental update, so the original PDF's bytes stay unchanged at the
+start of the signed file. It does not use a PDF library such as Apache PDFBox, because those need AWT, which the
+database's Java does not include.
 
 ## Before production
 
