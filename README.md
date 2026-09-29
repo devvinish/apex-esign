@@ -5,7 +5,7 @@ It needs no paid service and no extra server: the PDF work runs inside the datab
 [pdf-lib](https://pdf-lib.js.org) in MLE (JavaScript in the database) on 23ai and 26ai, or with a small Java
 engine in the database's Java on 19c. The PKCS#7 digital seal is built in PL/SQL.
 
-Step-by-step guide with screenshots: on [vinish.dev](https://vinish.dev).
+Step-by-step guide with screenshots: [How to Build Electronic Signatures in Oracle APEX](https://vinish.dev/electronic-signatures-oracle-apex) on vinish.dev.
 
 ## Features
 
